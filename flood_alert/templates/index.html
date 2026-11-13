@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Flood Alert</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<style>
+  :root { --high:#c62828; --moderate:#ef8f00; --low:#2e7d32; --undet:#7b61a8; --unrated:#9e9e9e; --pending:#cfcfcf;
+          --bg:#fafafa; --fg:#1d1d1f; --muted:#666; --panel:#fff; --border:#ddd; }
+  * { box-sizing: border-box; }
+  body { margin:0; font:14px/1.45 system-ui, -apple-system, sans-serif; color:var(--fg); background:var(--bg);
+         display:flex; height:100vh; }
+  #side { width:400px; max-width:100%; overflow:auto; padding:16px; background:var(--panel); border-right:1px solid var(--border); }
+  #map { flex:1; }
+  h1 { font-size:18px; margin:0 0 4px; }
+  .muted { color:var(--muted); font-size:12px; }
+  input, select, button { font:inherit; padding:6px 8px; border:1px solid var(--border); border-radius:6px; }
+  input, select { width:100%; }
+  button { background:#1d1d1f; color:#fff; border:0; cursor:pointer; }
+  .row { display:flex; gap:6px; margin:8px 0; }
+  #alert { margin-top:12px; padding:12px; border-radius:8px; border:1px solid var(--border); white-space:pre-wrap; display:none; }
+  #alert.warn { border-left:5px solid var(--high); }
+  #alert.none { border-left:5px solid var(--unrated); }
+  .chip { display:inline-block; width:10px; height:10px; border-radius:50%; margin-right:6px; vertical-align:middle; }
+  .legend div { margin:2px 0; }
+  ul.named { padding-left:18px; margin:8px 0 0; }
+  .stats { margin:8px 0; }
+  @media (max-width: 760px) { body { flex-direction:column; } #side { width:100%; height:45vh; border-right:0; } #map { height:55vh; } }
+</style>
+</head>
+<body>
+<div id="side">
+  <h1>Flood Alert</h1>
+  <div class="muted">Susceptibility Ratings from Hurricane Harvey before/after aerial imagery. Replay a Harvey Flash Flood Warning for any Alert Location. Nothing is sent.</div>
+  <div class="stats muted" id="stats">Loading…</div>
+  <div class="row"><input id="addr" placeholder="Address (sent to OpenStreetMap Nominatim)"><button id="go">Alert</button></div>
+  <div class="muted">…or click the map to drop a pin.</div>
+  <div class="row"><select id="warning"><option value="">Any Flash Flood Warning covering the location</option></select></div>
+  <div id="alert"></div>
+  <h3>Legend</h3>
+  <div class="legend">
+    <div><span class="chip" style="background:var(--high)"></span>High — roadway under New Water after Harvey</div>
+    <div><span class="chip" style="background:var(--moderate)"></span>Moderate — New Water / Flood Residue close by, or FEMA High-Risk Zone</div>
+    <div><span class="chip" style="background:var(--low)"></span>Low — no evidence nearby, outside FEMA High-Risk Zone</div>
+    <div><span class="chip" style="background:var(--undet)"></span>Undetermined — roadway not visible</div>
+    <div><span class="chip" style="background:var(--pending)"></span>Not yet observed</div>
+    <div><span class="chip" style="background:var(--unrated)"></span>Unrated — outside imagery coverage</div>
+  </div>
+  <p class="muted"><a href="/review">Spot-check review page →</a></p>
+</div>
+<div id="map"></div>
+<script>
+const COLORS = {"High":"var(--high)","Moderate":"var(--moderate)","Low":"var(--low)","Undetermined":"var(--undet)",
+                "Unrated":"var(--unrated)","Not yet observed":"var(--pending)"};
+const css = n => getComputedStyle(document.documentElement).getPropertyValue(n.slice(4,-1)).trim();
+const NEARBY_M = {{ nearby_km }} * 1000;
+const map = L.map('map', {preferCanvas:true}).setView([29.8, -95.6], 10);
+L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {maxZoom:19, attribution:'&copy; OpenStreetMap contributors'}).addTo(map);
+const layers = {footprints:L.layerGroup().addTo(map), warnings:L.layerGroup(), inter:L.layerGroup().addTo(map), alert:L.layerGroup().addTo(map)};
+L.control.layers(null, {"Image footprints":layers.footprints, "Harvey Flash Flood Warnings":layers.warnings, "Intersections":layers.inter}).addTo(map);
+let overlay = null;
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+function showImage(id, bounds) {
+  if (overlay) map.removeLayer(overlay);
+  overlay = L.imageOverlay(`/image/${id}.png`, bounds, {opacity:0.9}).addTo(map);
+}
+window.showImage = showImage;
+
+fetch('/api/data').then(r => r.json()).then(d => {
+  const fb = [];
+  d.footprints.forEach(f => {
+    fb.push(f.bounds[0], f.bounds[1]);
+    L.rectangle(f.bounds, {color:'#3367d6', weight:1, fillOpacity:0.03}).bindPopup(
+      `<b>Image Pair ${esc(f.pair_id)}</b><br>${esc(f.locality)}<br>FEMA SFHA: ${esc(f.fema_sfha_tf || 'blank')}<br>` +
+      `<a href="#" onclick='showImage(${JSON.stringify(f.before)}, ${JSON.stringify(f.bounds)});return false'>show before</a> · ` +
+      `<a href="#" onclick='showImage(${JSON.stringify(f.after)}, ${JSON.stringify(f.bounds)});return false'>show after</a>`
+    ).addTo(layers.footprints);
+  });
+  if (fb.length) map.fitBounds(fb);
+  const counts = {};
+  d.intersections.forEach(i => {
+    counts[i.rating] = (counts[i.rating] || 0) + 1;
+    const o = i.observation;
+    L.circleMarker([i.lat, i.lon], {radius: i.rating === 'High' ? 6 : 4, weight:1, color:'#222',
+        fillColor: css(COLORS[i.rating]), fillOpacity:0.9}).bindPopup(
+      `<b>${esc(i.name)}</b><br>Rating: <b>${esc(i.rating)}</b><br>${esc(i.reason)}` +
+      (o ? `<br><span class="muted">roadway visible: ${o.roadway_visible}; water on roadway: ${o.new_water_on_roadway}; ` +
+           `water/residue close by: ${o.new_water_or_residue_close_by}<br>${esc(o.notes)}</span>` +
+           `<br><img src="/crop/${encodeURIComponent(i.id)}/before.png" width="140"> <img src="/crop/${encodeURIComponent(i.id)}/after.png" width="140">` : '')
+    ).addTo(layers.inter);
+  });
+  document.getElementById('stats').textContent =
+    `${d.footprints.length} Image Pairs · ${d.intersections.length} Intersections · ` +
+    Object.entries(counts).map(([k,v]) => `${k}: ${v}`).join(' · ') + ` · ${d.warnings.length} Harvey warnings`;
+  const sel = document.getElementById('warning');
+  d.warnings.forEach(w => {
+    L.geoJSON(w.geometry, {style:{color:'#8b0000', weight:1, fillOpacity:0.05}})
+      .bindPopup(`<b>Flash Flood Warning</b><br>${esc(w.wfo)} ${esc(w.issued)} → ${esc(w.expires)}<br>${esc(w.counties)}`).addTo(layers.warnings);
+    const opt = document.createElement('option');
+    opt.value = w.id; opt.textContent = `${w.issued.replace('T',' ').slice(0,16)}Z ${w.wfo} — ${w.counties}`;
+    sel.appendChild(opt);
+  });
+});
+
+async function requestAlert(body) {
+  const box = document.getElementById('alert');
+  box.style.display = 'block'; box.className = ''; box.textContent = 'Composing alert…';
+  body.warning_id = document.getElementById('warning').value;
+  const res = await fetch('/api/alert', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)});
+  const a = await res.json();
+  layers.alert.clearLayers();
+  if (a.location) {
+    const ll = [a.location.lat, a.location.lon];
+    L.marker(ll).addTo(layers.alert).bindPopup('Alert Location');
+    L.circle(ll, {radius:NEARBY_M, color:'#1d1d1f', weight:1, dashArray:'4', fill:false}).addTo(layers.alert);
+    if (!body.lat) map.setView(ll, 14);
+  }
+  box.className = a.status === 'alert' ? 'warn' : 'none';
+  let html = `<b>${a.status === 'alert' ? 'ALERT' : 'No alert'}</b>` + (a.location ? `<div class="muted">${esc(a.location.label)}</div>` : '') +
+             `<p>${esc(a.text)}</p>`;
+  if (a.named_intersections && a.named_intersections.length) {
+    html += '<b>Named intersections</b><ul class="named">' + a.named_intersections.map(i =>
+      `<li><span class="chip" style="background:${COLORS[i.rating]}"></span>${esc(i.name)} — ${esc(i.rating)}, ${i.distance_km.toFixed(2)} km ${esc(i.direction)}</li>`).join('') + '</ul>';
+  }
+  if (a.nearby_counts) html += `<div class="muted">Nearby (≤ ${NEARBY_M/1000} km): ` + Object.entries(a.nearby_counts).map(([k,v]) => `${k} ${v}`).join(', ') + '</div>';
+  if (a.composed_by) html += `<div class="muted">Text: ${esc(a.composed_by)}</div>`;
+  if (a.covering_warnings && a.covering_warnings.length > 1) html += `<div class="muted">${a.covering_warnings.length} Harvey warnings covered this location; showing the first.</div>`;
+  box.innerHTML = html;
+}
+map.on('click', e => requestAlert({lat:e.latlng.lat, lon:e.latlng.lng}));
+document.getElementById('go').onclick = () => { const v = document.getElementById('addr').value.trim(); if (v) requestAlert({address:v}); };
+document.getElementById('addr').addEventListener('keydown', e => { if (e.key === 'Enter') document.getElementById('go').click(); });
+</script>
+</body>
+</html>

@@ -218,3 +218,10 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Flood Alert project
+/data/
+/.venv/
+/scratch/
+/UTSA-flood-images
+.env
