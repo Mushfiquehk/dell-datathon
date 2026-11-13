@@ -5,6 +5,7 @@
   label-images          image pass (fills Image Labels for the 1,150 Harvey images)
   export-labels         write data/image_metadata_labelled.csv (project copy)
   fetch-intersections   pull Intersections from OpenStreetMap
+  fetch-addresses       build the search-bar address index (OSM, inside footprints only)
   fetch-warnings        pull Harvey Flash Flood Warning polygons (IEM)
   observe               intersection pass (Intersection Observations)
   rescore               recompute observations from saved model answers (no model calls)
@@ -35,6 +36,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--redo", action="store_true")
     sub.add_parser("export-labels")
     sub.add_parser("fetch-intersections")
+    sub.add_parser("fetch-addresses")
     sub.add_parser("fetch-warnings")
     p = sub.add_parser("observe")
     p.add_argument("--limit", type=int)
@@ -85,6 +87,10 @@ def main(argv: list[str] | None = None) -> int:
         from .osm import run_fetch_intersections
 
         run_fetch_intersections(settings, store)
+    elif args.cmd == "fetch-addresses":
+        from .addresses import run_fetch_addresses
+
+        run_fetch_addresses(settings, store)
     elif args.cmd == "fetch-warnings":
         from .nws_warnings import fetch_warnings
 

@@ -204,3 +204,22 @@ def test_labels_for_pair():
     assert a["flood_visible"] == "uncertain"
     b, a = labels_for_pair(_seen(), _seen())
     assert a["flood_visible"] == "no" and a["flood_aftermath_visible"] == "no"
+
+
+def test_suggest_prefix_and_footprint_only(tmp_path):
+    from flood_alert.addresses import extract_addresses, suggest
+    from flood_alert.store import Store
+
+    osm = {"elements": [
+        {"type": "node", "id": 1, "lat": 29.8, "lon": -95.6, "tags": {"addr:housenumber": "1234", "addr:street": "Barker Cypress Road", "addr:city": "Houston"}},
+        {"type": "way", "id": 2, "center": {"lat": 29.81, "lon": -95.61}, "tags": {"addr:housenumber": "88", "addr:street": "Clay Road"}},
+        {"type": "node", "id": 3, "lat": 29.8, "lon": -95.6, "tags": {"addr:street": "No Number St"}},
+    ]}
+    found = extract_addresses(osm)
+    assert [a["label"] for a in found] == ["1234 Barker Cypress Road, Houston", "88 Clay Road"]
+    store = Store(tmp_path / "t.sqlite")
+    store.replace_addresses([{**a, "pair_id": "p1"} for a in found])
+    assert [s["label"] for s in suggest(store, "1234 bark")] == ["1234 Barker Cypress Road, Houston"]
+    assert [s["label"] for s in suggest(store, "clay")] == ["88 Clay Road"]
+    assert suggest(store, "x") == [] and suggest(store, "") == []
+    assert suggest(store, 'ba" OR *') is not None   # FTS syntax in user input does not crash
