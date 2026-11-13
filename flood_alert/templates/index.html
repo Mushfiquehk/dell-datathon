@@ -28,6 +28,12 @@
   ul.named { padding-left:18px; margin:8px 0 0; }
   .stats { margin:8px 0; }
   @media (max-width: 760px) { body { flex-direction:column; } #side { width:100%; height:45vh; border-right:0; } #map { height:55vh; } }
+  #sugg { display:none; position:absolute; left:0; right:0; top:100%; z-index:1000; margin:2px 0 0; padding:0; list-style:none;
+          background:#fff; border:1px solid var(--border); border-radius:6px; box-shadow:0 4px 14px rgba(0,0,0,.12); max-height:280px; overflow:auto; }
+  #sugg li { padding:9px 10px; cursor:pointer; border-bottom:1px solid #f0f0f0; }
+  #sugg li:last-child { border-bottom:0; }
+  #sugg li.active, #sugg li:hover { background:#eef3ff; }
+  #sugg .kind { float:right; font-size:11px; color:#888; }
 </style>
 </head>
 <body>
@@ -35,7 +41,8 @@
   <h1>Flood Alert</h1>
   <div class="muted">Susceptibility Ratings from Hurricane Harvey before/after aerial imagery. Replay a Harvey Flash Flood Warning for any Alert Location. Nothing is sent.</div>
   <div class="stats muted" id="stats">Loading…</div>
-  <div class="row"><input id="addr" placeholder="Address (sent to OpenStreetMap Nominatim)"><button id="go">Alert</button></div>
+  <div class="row" style="position:relative"><input id="addr" autocomplete="off" placeholder="Address or intersection in the imagery area"><button id="go">Alert</button>
+    <ul id="sugg" role="listbox"></ul></div>
   <div class="muted">…or click the map to drop a pin.</div>
   <div class="row"><select id="warning"><option value="">Any Flash Flood Warning covering the location</option></select></div>
   <div id="alert"></div>
@@ -131,8 +138,49 @@ async function requestAlert(body) {
   box.innerHTML = html;
 }
 map.on('click', e => requestAlert({lat:e.latlng.lat, lon:e.latlng.lng}));
-document.getElementById('go').onclick = () => { const v = document.getElementById('addr').value.trim(); if (v) requestAlert({address:v}); };
-document.getElementById('addr').addEventListener('keydown', e => { if (e.key === 'Enter') document.getElementById('go').click(); });
+// --- autosuggest: only places inside the imagery footprints (local index) ---
+const addr = document.getElementById('addr'), sugg = document.getElementById('sugg');
+let items = [], active = -1, picked = null, timer = null, seq = 0;
+function hideSugg() { sugg.style.display = 'none'; active = -1; }
+function renderSugg() {
+  if (!items.length) { hideSugg(); return; }
+  sugg.innerHTML = items.map((s, i) => `<li role="option" data-i="${i}" class="${i === active ? 'active' : ''}">` +
+    `<span class="kind">${s.kind === 'intersection' ? 'intersection' : ''}</span>${esc(s.label)}</li>`).join('');
+  sugg.style.display = 'block';
+}
+function pick(i) {
+  const s = items[i]; if (!s) return;
+  picked = s; addr.value = s.label; hideSugg();
+  requestAlert({lat:s.lat, lon:s.lon, label:s.label}); map.setView([s.lat, s.lon], 16);
+}
+addr.addEventListener('input', () => {
+  picked = null; clearTimeout(timer);
+  const q = addr.value.trim();
+  if (q.length < 2) { items = []; hideSugg(); return; }
+  timer = setTimeout(async () => {
+    const my = ++seq;
+    const res = await fetch('/api/suggest?q=' + encodeURIComponent(q));
+    if (my !== seq) return;            // a newer keystroke won
+    items = await res.json(); active = -1; renderSugg();
+  }, 200);
+});
+addr.addEventListener('keydown', e => {
+  if (sugg.style.display === 'block' && items.length) {
+    if (e.key === 'ArrowDown') { active = (active + 1) % items.length; renderSugg(); e.preventDefault(); return; }
+    if (e.key === 'ArrowUp') { active = (active - 1 + items.length) % items.length; renderSugg(); e.preventDefault(); return; }
+    if (e.key === 'Escape') { hideSugg(); return; }
+    if (e.key === 'Enter') { pick(active >= 0 ? active : 0); e.preventDefault(); return; }
+  }
+  if (e.key === 'Enter') document.getElementById('go').click();
+});
+sugg.addEventListener('mousedown', e => { const li = e.target.closest('li'); if (li) { e.preventDefault(); pick(+li.dataset.i); } });
+addr.addEventListener('blur', () => setTimeout(hideSugg, 150));
+document.getElementById('go').onclick = () => {
+  const v = addr.value.trim(); if (!v) return;
+  if (picked && picked.label === v) requestAlert({lat:picked.lat, lon:picked.lon, label:picked.label});
+  else if (items.length) pick(0);
+  else requestAlert({address:v});
+};
 </script>
 </body>
 </html>

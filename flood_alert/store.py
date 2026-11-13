@@ -45,6 +45,15 @@ CREATE TABLE IF NOT EXISTS warnings (
     properties TEXT NOT NULL,
     geometry TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS places (              -- search-bar suggestions, inside the Covered Area only
+    id TEXT PRIMARY KEY,
+    kind TEXT NOT NULL,                     -- address / intersection
+    label TEXT NOT NULL,
+    lat REAL NOT NULL,
+    lon REAL NOT NULL,
+    pair_id TEXT
+);
+CREATE VIRTUAL TABLE IF NOT EXISTS place_fts USING fts5(label, content='places', content_rowid='rowid', tokenize='unicode61');
 CREATE TABLE IF NOT EXISTS reviews (
     intersection_id TEXT PRIMARY KEY REFERENCES intersections(id),
     verdict TEXT NOT NULL,                  -- right / wrong
@@ -107,6 +116,18 @@ class Store:
     def intersection(self, intersection_id: str) -> sqlite3.Row | None:
         rows = self.query("SELECT * FROM intersections WHERE id = ?", (intersection_id,))
         return rows[0] if rows else None
+
+    # --- search-bar places -------------------------------------------------
+    def replace_addresses(self, rows: list[dict]) -> None:
+        """Addresses from OSM plus every rated Intersection, re-indexed for prefix search."""
+        inters = [(r["id"], "intersection", r["name"], r["lat"], r["lon"], r["pair_id"])
+                  for r in self.intersections(rated_only=True)]
+        with self._lock:
+            self.conn.execute("DELETE FROM places")
+            self.conn.executemany("INSERT OR REPLACE INTO places (id, kind, label, lat, lon, pair_id) VALUES (?,?,?,?,?,?)",
+                                  [(r["id"], "address", r["label"], r["lat"], r["lon"], r["pair_id"]) for r in rows] + inters)
+            self.conn.execute("INSERT INTO place_fts(place_fts) VALUES ('rebuild')")
+            self.conn.commit()
 
     # --- observations -----------------------------------------------------
     def save_observation(self, intersection_id: str, pair_id: str, obs: dict, model: str, raw: str) -> None:

@@ -48,6 +48,12 @@ def create_app(settings: Settings | None = None, store: Store | None = None, use
                          for w in store.warnings()],
         })
 
+    @app.get("/api/suggest")
+    def suggest_places():
+        from .addresses import suggest
+
+        return jsonify(suggest(store, request.args.get("q", "")))
+
     @app.post("/api/alert")
     def alert():
         body = request.get_json(force=True) or {}
@@ -65,6 +71,7 @@ def create_app(settings: Settings | None = None, store: Store | None = None, use
                 lat, lon = float(body["lat"]), float(body["lon"])
             except (KeyError, TypeError, ValueError):
                 return jsonify({"status": "error", "text": "Give an address or lat/lon."}), 400
+            label = str(body.get("label") or "")[:200] or None
         return jsonify(build_alert(settings, store, lat, lon, warning_id=body.get("warning_id") or None,
                                    location_label=label, client=client()))
 
