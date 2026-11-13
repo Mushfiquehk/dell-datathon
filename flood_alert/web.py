@@ -77,11 +77,12 @@ def create_app(settings: Settings | None = None, store: Store | None = None, use
 
     @app.get("/crop/<intersection_id>/<which>.png")
     def crop(intersection_id: str, which: str):
-        rows = [r for r in store.intersections(rated_only=True) if r["id"] == intersection_id]
-        if not rows or which not in ("before", "after"):
+        r = store.intersection(intersection_id)
+        if r is None or r["pair_id"] is None or which not in ("before", "after"):
             abort(404)
-        r = rows[0]
-        pair = pairs_by_id[r["pair_id"]]
+        pair = pairs_by_id.get(r["pair_id"])
+        if pair is None:
+            abort(404)
         img = crop_around(pair.before if which == "before" else pair.after, r["lat"], r["lon"],
                           settings.crop_size_m, settings.crop_output_px)
         buf = io.BytesIO()

@@ -21,7 +21,14 @@ _THINK_RE = re.compile(r"<think>.*?</think>", re.DOTALL)
 
 
 class VLMError(RuntimeError):
-    pass
+    def __init__(self, message: str, status: int | None = None):
+        super().__init__(message)
+        self.status = status
+
+    @property
+    def retryable(self) -> bool:
+        # 4xx (bad key, wrong model, bad request) will not fix itself; 408/429 and 5xx might.
+        return self.status is None or self.status in (408, 429) or self.status >= 500
 
 
 def image_to_data_url(image: Any) -> str:
@@ -116,7 +123,7 @@ class VLMClient:
                 return json.loads(resp.read().decode())
         except urllib.error.HTTPError as e:
             body = e.read().decode(errors="replace")[:500]
-            raise VLMError(f"HTTP {e.code} from {self.base_url}{path}: {body}") from e
+            raise VLMError(f"HTTP {e.code} from {self.base_url}{path}: {body}", status=e.code) from e
         except (urllib.error.URLError, TimeoutError, ConnectionError) as e:
             raise VLMError(f"Cannot reach model server at {self.base_url}: {e}") from e
 
@@ -147,6 +154,8 @@ class VLMClient:
                 return ChatResult(text=msg.get("content") or "", model=raw.get("model", self.model), raw=raw)
             except (VLMError, KeyError, IndexError) as e:
                 last = e
+                if isinstance(e, VLMError) and not e.retryable:
+                    break
                 if attempt < retries:
                     time.sleep(2 * (attempt + 1))
         raise VLMError(str(last))

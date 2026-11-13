@@ -19,8 +19,8 @@ from PIL import Image as PILImage, ImageDraw
 from .config import Settings
 from .dataset import Image, ImagePair, load_pairs
 from .store import Store
-from .perception import Seen, look_at_crop
-from .vlm import VLMClient, VLMError
+from .perception import Seen, _seen, look_at_crop
+from .vlm import VLMClient, VLMError, extract_json
 
 log = logging.getLogger(__name__)
 
@@ -33,14 +33,18 @@ def to_observation(before: Seen, after: Seen) -> dict:
       paved road, standing water or mud (a submerged road is visibly under water, so it counts as seen).
     - New Water on the roadway: the after ring shows standing water.
     - New Water or Flood Residue close by: standing water elsewhere in the after crop that the
-      before crop did not have, mud or debris elsewhere in the after crop, or mud on the roadway itself
+      before crop did not have, mud or debris elsewhere in the after crop that the before crop did not
+      have, or mud on the (visible) roadway itself
       (residue without standing water is not High, but it is evidence).
     """
     b, a = before.ring_surface, after.ring_surface
     visible = b == "paved_road" and a in ("paved_road", "standing_water", "mud")
     on_road = visible and a == "standing_water"
     new_water_elsewhere = after.standing_water and not before.standing_water
-    close_by = new_water_elsewhere or after.mud_or_debris or a == "mud"
+    # Residue must also be new: mud/debris already in the before crop is not Harvey evidence
+    # (this was a source of Moderate false alarms on the dry control pairs).
+    new_residue_elsewhere = after.mud_or_debris and not before.mud_or_debris
+    close_by = new_water_elsewhere or new_residue_elsewhere or (visible and a == "mud")
     return {
         "roadway_visible": visible,
         "new_water_on_roadway": on_road,
@@ -120,3 +124,27 @@ def run_intersection_pass(settings: Settings, store: Store, limit: int | None = 
             progress(f"  [{count}/{len(rows)}] {r['name']}: visible={obs['roadway_visible']} "
                      f"on_road={obs['new_water_on_roadway']} close_by={obs['new_water_or_residue_close_by']} | {obs['notes'][:80]}")
     return count
+
+
+def rescore_observations(store: Store, progress: Callable[[str], None] = print) -> int:
+    """Recompute every stored Intersection Observation from the model's saved raw answers.
+
+    No model calls: use this after changing to_observation so earlier runs pick up the new rule.
+    """
+    changed = 0
+    for iid, row in store.observations().items():
+        try:
+            raw = json.loads(row["raw"] or "{}")
+            before = _seen(extract_json(raw["before"]), raw["before"], ring=True)
+            after = _seen(extract_json(raw["after"]), raw["after"], ring=True)
+        except (KeyError, ValueError, VLMError) as e:
+            progress(f"  ! {iid}: cannot rescore ({e})")
+            continue
+        obs = to_observation(before, after)
+        old = (bool(row["roadway_visible"]), bool(row["new_water_on_roadway"]), bool(row["new_water_or_residue_close_by"]))
+        new = (obs["roadway_visible"], obs["new_water_on_roadway"], obs["new_water_or_residue_close_by"])
+        if old != new:
+            changed += 1
+        store.save_observation(iid, row["pair_id"], obs, row["model"], row["raw"])
+    progress(f"Rescored {len(store.observations())} observations; {changed} changed.")
+    return changed

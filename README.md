@@ -12,6 +12,7 @@ Turns a broad Flash Flood Warning into a place-by-place picture of which Interse
 | Intersections and road names from OpenStreetMap | `python -m flood_alert fetch-intersections` | sqlite `intersections` |
 | Harvey Flash Flood Warning polygons (IEM, HGX + LCH) | `python -m flood_alert fetch-warnings` | sqlite `warnings` |
 | Intersection pass: one Intersection Observation each | `python -m flood_alert observe` | sqlite `observations` |
+| Re-apply the comparison rule to saved model answers (no model calls) | `python -m flood_alert rescore` | sqlite `observations` |
 | Counts | `python -m flood_alert summary` | |
 | One Alert in the terminal | `python -m flood_alert alert 29.84 -95.64` | |
 | Map, on-screen Alerts and spot-check page | `python -m flood_alert serve` → http://127.0.0.1:5050 (review at `/review`) | |
@@ -64,6 +65,19 @@ export VLM_CONCURRENCY=8          # parallel requests; vLLM batches them
 ```
 
 Other settings: `ALERT_MODEL` (the model that writes Alert text; defaults to `VLM_MODEL`), `VLM_JSON_SCHEMA=0` (turns off guided JSON output if a server rejects it), `NEARBY_KM` (default 1.5), `CROP_SIZE_M` (default 150), `FLOOD_DATASET_DIR` and `FLOOD_DATA_DIR`.
+
+## Share on Tailscale
+
+`serve` binds to 127.0.0.1, so it is not exposed on the venue network. Tailscale proxies to it over your tailnet only:
+
+```bash
+.venv/bin/python -m flood_alert serve &          # http://127.0.0.1:5050
+sudo tailscale serve --bg 5050                    # https://<gb10-hostname>.<tailnet>.ts.net
+tailscale serve status                            # shows the URL
+sudo tailscale serve --https=443 off              # stop sharing
+```
+
+Use `tailscale serve`, not `tailscale funnel`: funnel makes the page public on the internet, and `/api/review` and `/api/alert` have no login.
 
 ## Setup
 

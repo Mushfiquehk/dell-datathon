@@ -104,6 +104,10 @@ class Store:
             sql += " WHERE pair_id IS NOT NULL"
         return self.query(sql + " ORDER BY id")
 
+    def intersection(self, intersection_id: str) -> sqlite3.Row | None:
+        rows = self.query("SELECT * FROM intersections WHERE id = ?", (intersection_id,))
+        return rows[0] if rows else None
+
     # --- observations -----------------------------------------------------
     def save_observation(self, intersection_id: str, pair_id: str, obs: dict, model: str, raw: str) -> None:
         self.execute(

@@ -7,6 +7,7 @@
   fetch-intersections   pull Intersections from OpenStreetMap
   fetch-warnings        pull Harvey Flash Flood Warning polygons (IEM)
   observe               intersection pass (Intersection Observations)
+  rescore               recompute observations from saved model answers (no model calls)
   summary               counts per Susceptibility Rating
   alert LAT LON         print the Alert for one Alert Location
   serve                 map + alerts + review page
@@ -40,6 +41,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--id", action="append", dest="ids")
     p.add_argument("--pair", action="append", dest="pair_ids")
     p.add_argument("--redo", action="store_true")
+    sub.add_parser("rescore")
     sub.add_parser("summary")
     p = sub.add_parser("alert")
     p.add_argument("lat", type=float)
@@ -91,6 +93,10 @@ def main(argv: list[str] | None = None) -> int:
         from .intersection_pass import run_intersection_pass
 
         run_intersection_pass(settings, store, limit=args.limit, ids=args.ids, pair_ids=args.pair_ids, redo=args.redo)
+    elif args.cmd == "rescore":
+        from .intersection_pass import rescore_observations
+
+        rescore_observations(store)
     elif args.cmd == "summary":
         from .alerts import intersection_ratings
 

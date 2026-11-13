@@ -173,6 +173,26 @@ def test_to_observation_rules():
     assert o["new_water_or_residue_close_by"]
     o = to_observation(_seen("paved_road"), _seen("mud"))
     assert o["roadway_visible"] and not o["new_water_on_roadway"] and o["new_water_or_residue_close_by"]
+    o = to_observation(_seen("paved_road", mud=True), _seen("paved_road", mud=True))
+    assert not o["new_water_or_residue_close_by"]                              # residue already there before
+    o = to_observation(_seen("paved_road"), _seen("paved_road", mud=True))
+    assert o["new_water_or_residue_close_by"]                                  # new residue
+
+
+def test_rescore_uses_saved_answers(tmp_path):
+    import json
+    from flood_alert.intersection_pass import rescore_observations
+    from flood_alert.store import Store
+
+    store = Store(tmp_path / "t.sqlite")
+    store.replace_intersections([{"id": "i1", "name": "A & B", "roads": ["A", "B"], "lat": 0, "lon": 0,
+                                  "pair_id": "p1", "osm_node_ids": [1]}])
+    ans = json.dumps({"description": "road", "ring_surface": "paved_road", "standing_water": False, "mud_or_debris": True})
+    raw = json.dumps({"before": ans, "after": ans})
+    store.save_observation("i1", "p1", {"roadway_visible": True, "new_water_on_roadway": False,
+                                        "new_water_or_residue_close_by": True}, "m", raw)
+    assert rescore_observations(store, progress=lambda _: None) == 1
+    assert store.observations()["i1"]["new_water_or_residue_close_by"] == 0
 
 
 def test_labels_for_pair():
