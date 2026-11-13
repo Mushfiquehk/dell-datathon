@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Spot Check</title>
+<style>
+  :root { --bg:#fafafa; --fg:#1d1d1f; --muted:#666; --border:#ddd; --ok:#2e7d32; --bad:#c62828; }
+  body { margin:0; padding:16px; font:14px/1.45 system-ui, -apple-system, sans-serif; background:var(--bg); color:var(--fg); }
+  .item { display:flex; flex-wrap:wrap; gap:12px; padding:12px; margin:12px 0; background:#fff; border:1px solid var(--border); border-radius:8px; }
+  .item img { width:260px; max-width:45vw; height:auto; border-radius:4px; }
+  .meta { flex:1; min-width:240px; }
+  .muted { color:var(--muted); font-size:12px; }
+  button { font:inherit; padding:6px 14px; border-radius:6px; border:1px solid var(--border); cursor:pointer; background:#fff; }
+  button.right.on { background:var(--ok); color:#fff; } button.wrong.on { background:var(--bad); color:#fff; }
+  table { border-collapse:collapse; } td { padding:1px 8px 1px 0; }
+</style>
+</head>
+<body>
+<h1>Spot check</h1>
+<p class="muted">{{ items|length }} Intersections, sampled across ratings. Compare the BEFORE and AFTER crops (red ring = Intersection) with the model's three answers and mark the observation right or wrong. This is a spot check, not an accuracy figure: you can see the model's answer.</p>
+<p><b id="tally">Right: {{ right }} · Wrong: {{ wrong }} · Unreviewed: {{ items|length - right - wrong }}</b> · <a href="/">map</a></p>
+{% for i in items %}
+<div class="item" data-id="{{ i.id }}">
+  <div><div class="muted">BEFORE (2016)</div><img loading="lazy" src="/crop/{{ i.id|urlencode }}/before.png"></div>
+  <div><div class="muted">AFTER (2017)</div><img loading="lazy" src="/crop/{{ i.id|urlencode }}/after.png"></div>
+  <div class="meta">
+    <b>{{ loop.index }}. {{ i.name }}</b><br>
+    <span class="muted">{{ i.id }} · pair {{ i.pair_id }} · FEMA SFHA {{ i.fema_sfha_tf or 'blank' }}</span>
+    <table>
+      <tr><td>Roadway visible</td><td><b>{{ 'yes' if i.observation.roadway_visible else 'no' }}</b></td></tr>
+      <tr><td>New Water on roadway</td><td><b>{{ 'yes' if i.observation.new_water_on_roadway else 'no' }}</b></td></tr>
+      <tr><td>New Water / Residue close by</td><td><b>{{ 'yes' if i.observation.new_water_or_residue_close_by else 'no' }}</b></td></tr>
+      <tr><td>Rating</td><td><b>{{ i.rating }}</b></td></tr>
+    </table>
+    <p class="muted">{{ i.observation.notes }}</p>
+    <button class="right {{ 'on' if i.review and i.review.verdict == 'right' }}">Right</button>
+    <button class="wrong {{ 'on' if i.review and i.review.verdict == 'wrong' }}">Wrong</button>
+  </div>
+</div>
+{% endfor %}
+<script>
+document.querySelectorAll('.item').forEach(el => {
+  el.querySelectorAll('button').forEach(btn => btn.onclick = async () => {
+    const verdict = btn.classList.contains('right') ? 'right' : 'wrong';
+    await fetch('/api/review', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({id:el.dataset.id, verdict})});
+    el.querySelectorAll('button').forEach(b => b.classList.remove('on'));
+    btn.classList.add('on');
+    const all = document.querySelectorAll('.item').length;
+    const r = document.querySelectorAll('button.right.on').length, w = document.querySelectorAll('button.wrong.on').length;
+    document.getElementById('tally').textContent = `Right: ${r} · Wrong: ${w} · Unreviewed: ${all - r - w}`;
+  });
+});
+</script>
+</body>
+</html>
