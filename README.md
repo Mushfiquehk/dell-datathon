@@ -31,6 +31,23 @@ You can stop and restart both model passes at any point: they skip work that is 
 
 An Intersection outside every image footprint is **Unrated**. If an Intersection appears in two overlapping images, it is rated from the one where it sits nearest the centre. Each Intersection is judged from a 150 m crop of both images, with a red ring marking the Intersection. A crop that the image edge cuts off is still used.
 
+## How the model is asked
+
+`qwen3-vl-8b-instruct` changes its answers a lot depending on how the question is worded. When it was shown a before/after pair and told it was Hurricane Harvey, it reported flooding on almost every image, dry ones included. When it was given a vivid description of flooded streets, it rated every Intersection High, including those in dry control pairs. So each image or crop is now described **on its own**, with no mention of floods (`flood_alert/perception.py`):
+
+- the surface inside the ring: paved road, standing water, mud, trees, roof, grass or soil, or cannot tell
+- whether there is standing water elsewhere in the image (pools, ponds, rivers and channels excluded)
+- whether there is mud or debris elsewhere
+
+The code then makes the before/after comparison. New Water means water in the after image and not in the before image. This is done by `to_observation` in `intersection_pass.py` and `labels_for_pair` in `image_pass.py`.
+
+Test run on the GB10 (4 hand-checked pairs plus 19 more):
+
+- **Dry control pairs** (Rosenberg, TXH_15325_27130 and TXH_15326_27130): both after images are labelled no water / no residue. Their 34 Intersections came out 19 Low, 7 Moderate, 7 Undetermined and 1 High. The High and some Moderates come from dark patches on the pavement.
+- **Flooded pairs** (TX001, TX002, TXH_15340_27092): 13 High, 4 Moderate, 22 Undetermined and 1 Low. Tree canopy over the ring makes many Intersections Undetermined.
+
+The model misses floods more often than it invents them, so a missed High tends to become Undetermined or Moderate. Use the `/review` page to spot-check before relying on the ratings.
+
 ## Model settings
 
 Settings are environment variables, and every model call goes through the OpenAI-compatible API, so vLLM, GPUStack and Ollama all work:
@@ -39,7 +56,7 @@ Settings are environment variables, and every model call goes through the OpenAI
 # GB10 (vLLM behind GPUStack)
 export VLM_BASE_URL=http://10.246.100.230/v1
 export VLM_MODEL=qwen3-vl-8b-instruct
-export VLM_API_KEY=...            # do not commit
+export VLM_API_KEY=...            # do not commit; this key can use qwen3-vl-8b-instruct but gets 403 on qwen3-vl-32b-instruct
 export VLM_CONCURRENCY=8          # parallel requests; vLLM batches them
 
 # or a local vLLM server: VLM_BASE_URL=http://localhost:8000/v1 (VLM_MODEL blank = first served model)

@@ -3,6 +3,7 @@
 Each Intersection is judged from a 150 m square crop centred on it, cut from both
 images of its Image Pair. A crop clipped by the image edge is still used, so the
 Intersection is marked with a ring rather than assumed to be at the crop centre.
+Each crop is described on its own (see perception.py); the comparison is done here.
 """
 from __future__ import annotations
 
@@ -18,42 +19,36 @@ from PIL import Image as PILImage, ImageDraw
 from .config import Settings
 from .dataset import Image, ImagePair, load_pairs
 from .store import Store
-from .vlm import VLMClient, VLMError, yes_no
+from .perception import Seen, look_at_crop
+from .vlm import VLMClient, VLMError
 
 log = logging.getLogger(__name__)
 
 MARKER_RADIUS_M = 12.0
 
-OBSERVATION_SCHEMA = {
-    "type": "object",
-    "properties": {
-        "roadway_visible": {"type": "boolean"},
-        "new_water_on_roadway": {"type": "boolean"},
-        "new_water_or_residue_close_by": {"type": "boolean"},
-        "notes": {"type": "string"},
-    },
-    "required": ["roadway_visible", "new_water_on_roadway", "new_water_or_residue_close_by", "notes"],
-}
+def to_observation(before: Seen, after: Seen) -> dict:
+    """Combine what the model saw in each crop into an Intersection Observation (CONTEXT.md).
 
-PROMPT = (
-    "Two aerial image crops of the same 150 m square of ground near Houston, Texas, north up.\n"
-    "Image 1: BEFORE Hurricane Harvey (2016). Image 2: AFTER Harvey (days after the heaviest rain, 2017).\n"
-    "A red ring in each marks the road intersection of {name}. 'The roadway' means the road "
-    "surface inside the red ring. 'Close by' means anywhere else in the crop.\n\n"
-    "Definitions:\n"
-    "- New Water: water in the AFTER image where there was none in the BEFORE image. Permanent "
-    "rivers, bayous, lakes, ponds, pools and retention basins are NOT New Water.\n"
-    "- Flood Residue: traces that water was recently present and has receded: mud, brown sediment "
-    "films, debris lines, piles of flood-damaged belongings at the curb.\n\n"
-    "Answer three questions:\n"
-    "1. roadway_visible: can the roadway inside the ring be seen in BOTH images (not hidden by trees, "
-    "cloud, deep shadow, or blank/black image area)?\n"
-    "2. new_water_on_roadway: in the AFTER image, is the roadway inside the ring under New Water?\n"
-    "3. new_water_or_residue_close_by: in the AFTER image, is New Water or Flood Residue visible close "
-    "by (elsewhere in the crop, not on the roadway inside the ring)?\n"
-    "Reply with JSON: {{\"roadway_visible\": true|false, \"new_water_on_roadway\": true|false, "
-    "\"new_water_or_residue_close_by\": true|false, \"notes\": one short sentence of what you saw}}."
-)
+    - Roadway visible: the ring shows paved road in the before crop, and in the after crop it shows
+      paved road, standing water or mud (a submerged road is visibly under water, so it counts as seen).
+    - New Water on the roadway: the after ring shows standing water.
+    - New Water or Flood Residue close by: standing water elsewhere in the after crop that the
+      before crop did not have, mud or debris elsewhere in the after crop, or mud on the roadway itself
+      (residue without standing water is not High, but it is evidence).
+    """
+    b, a = before.ring_surface, after.ring_surface
+    visible = b == "paved_road" and a in ("paved_road", "standing_water", "mud")
+    on_road = visible and a == "standing_water"
+    new_water_elsewhere = after.standing_water and not before.standing_water
+    close_by = new_water_elsewhere or after.mud_or_debris or a == "mud"
+    return {
+        "roadway_visible": visible,
+        "new_water_on_roadway": on_road,
+        "new_water_or_residue_close_by": close_by,
+        "notes": (f"[ring before: {b}; after: {a}; water elsewhere before/after: "
+                  f"{before.standing_water}/{after.standing_water}; mud/debris after: {after.mud_or_debris}] "
+                  f"{after.description}"),
+    }
 
 
 @lru_cache(maxsize=64)
@@ -82,17 +77,11 @@ def crop_around(image: Image, lat: float, lon: float, size_m: float, out_px: int
 
 
 def observe(client: VLMClient, settings: Settings, row, pair: ImagePair) -> tuple[dict, str]:
-    roads = json.loads(row["roads"])
-    before = crop_around(pair.before, row["lat"], row["lon"], settings.crop_size_m, settings.crop_output_px)
-    after = crop_around(pair.after, row["lat"], row["lon"], settings.crop_size_m, settings.crop_output_px)
-    answer, result = client.ask_json(PROMPT.format(name=" and ".join(roads)), [before, after], json_schema=OBSERVATION_SCHEMA)
-    obs = {
-        "roadway_visible": yes_no(answer.get("roadway_visible")) == "yes",
-        "new_water_on_roadway": yes_no(answer.get("new_water_on_roadway")) == "yes",
-        "new_water_or_residue_close_by": yes_no(answer.get("new_water_or_residue_close_by")) == "yes",
-        "notes": str(answer.get("notes", "")).strip().replace("\n", " ")[:500],
-    }
-    return obs, result.text
+    size, px = settings.crop_size_m, settings.crop_output_px
+    before = look_at_crop(client, crop_around(pair.before, row["lat"], row["lon"], size, px), size)
+    after = look_at_crop(client, crop_around(pair.after, row["lat"], row["lon"], size, px), size)
+    raw = json.dumps({"before": before.raw, "after": after.raw})
+    return to_observation(before, after), raw
 
 
 def run_intersection_pass(settings: Settings, store: Store, limit: int | None = None, ids: list[str] | None = None,

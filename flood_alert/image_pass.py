@@ -13,100 +13,77 @@ from typing import Callable
 from .config import Settings
 from .dataset import Image, ImagePair, load_pairs, read_metadata
 from .store import Store
-from .vlm import VLMClient, VLMError, yes_no
+from .perception import Seen, look_at_scene
+from .vlm import VLMClient, VLMError
 
 log = logging.getLogger(__name__)
 
-LABEL_SCHEMA = {
-    "type": "object",
-    "properties": {
-        "flood_visible": {"type": "string", "enum": ["yes", "no", "uncertain"]},
-        "flood_aftermath_visible": {"type": "string", "enum": ["yes", "no", "uncertain"]},
-        "notes": {"type": "string"},
-    },
-    "required": ["flood_visible", "flood_aftermath_visible", "notes"],
-}
-
-DEFINITIONS = (
-    "Definitions:\n"
-    "- New Water: water present where there was none before. Permanent rivers, bayous, lakes, ponds, "
-    "pools and retention basins are NOT New Water.\n"
-    "- Flood Residue: visible traces that water was recently present and has receded, such as mud, "
-    "brown sediment films, debris lines, or piles of flood-damaged belongings at the curb.\n"
-)
-
-AFTER_PROMPT = (
-    "You are labelling aerial imagery (about 530 m across, north up) from Hurricane Harvey, Texas.\n"
-    "The FIRST image was taken before the hurricane (reference). The SECOND image is the same ground "
-    "taken in the days after it. Label the SECOND image only, comparing it with the first.\n\n"
-    + DEFINITIONS +
-    "\nAnswer with JSON: {\"flood_visible\": yes|no|uncertain (is New Water visible anywhere in the "
-    "second image?), \"flood_aftermath_visible\": yes|no|uncertain (is Flood Residue visible?), "
-    "\"notes\": one short sentence saying what you saw and where}."
-)
-
-BEFORE_PROMPT = (
-    "You are labelling an aerial image (about 530 m across, north up) of the Houston, Texas area, "
-    "taken in 2016 as a pre-hurricane baseline.\n\n"
-    + DEFINITIONS +
-    "For this image, treat New Water as water clearly out of place: on roads, in yards, around "
-    "buildings or spread over fields outside any channel or pond.\n"
-    "\nAnswer with JSON: {\"flood_visible\": yes|no|uncertain (is New Water visible?), "
-    "\"flood_aftermath_visible\": yes|no|uncertain (is Flood Residue visible?), "
-    "\"notes\": one short sentence saying what you saw}."
-)
+def _yn(flag: bool) -> str:
+    return "yes" if flag else "no"
 
 
-def label_image(client: VLMClient, image: Image, pair: ImagePair) -> tuple[dict, str]:
-    if image.role == "after":
-        prompt, images = AFTER_PROMPT, [pair.before.path, image.path]
+def labels_for_pair(before: Seen, after: Seen) -> tuple[dict, dict]:
+    """Image Labels for both images of a pair from what the model saw in each.
+
+    New Water is water in the after image where there was none before, so for the after image:
+    water seen after and not before -> yes; water seen in both -> uncertain (it may be permanent or
+    the same wet area); no water after -> no. The before image has no earlier reference, so its
+    labels are what was seen in it.
+    """
+    before_label = {"flood_visible": _yn(before.standing_water), "flood_aftermath_visible": _yn(before.mud_or_debris),
+                    "notes": before.description}
+    if after.standing_water and before.standing_water:
+        water = "uncertain"
     else:
-        prompt, images = BEFORE_PROMPT, [image.path]
-    answer, result = client.ask_json(prompt, images, json_schema=LABEL_SCHEMA)
-    label = {
-        "flood_visible": yes_no(answer.get("flood_visible")),
-        "flood_aftermath_visible": yes_no(answer.get("flood_aftermath_visible")),
-        "notes": str(answer.get("notes", "")).strip().replace("\n", " ")[:500],
-    }
-    return label, result.text
+        water = _yn(after.standing_water)
+    after_label = {"flood_visible": water, "flood_aftermath_visible": _yn(after.mud_or_debris),
+                   "notes": after.description}
+    return before_label, after_label
+
+
+def label_pair(client: VLMClient, pair: ImagePair) -> list[tuple[Image, dict, str]]:
+    before = look_at_scene(client, pair.before.path)
+    after = look_at_scene(client, pair.after.path)
+    b, a = labels_for_pair(before, after)
+    return [(pair.before, b, before.raw), (pair.after, a, after.raw)]
 
 
 def run_image_pass(settings: Settings, store: Store, limit: int | None = None, image_ids: list[str] | None = None,
                    redo: bool = False, progress: Callable[[str], None] = print) -> int:
-    pairs = load_pairs(settings.dataset_dir)
-    work: list[tuple[Image, ImagePair]] = []
-    for p in pairs:
-        work += [(p.before, p), (p.after, p)]
+    """Labels images a pair at a time (the after label needs the before image), so a requested image
+    also labels its partner. `limit` counts pairs."""
+    pairs = list(load_pairs(settings.dataset_dir))
     if image_ids:
         wanted = set(image_ids)
-        work = [w for w in work if w[0].image_id in wanted]
+        pairs = [p for p in pairs if p.before.image_id in wanted or p.after.image_id in wanted]
     if not redo:
         done = store.labelled_image_ids()
-        work = [w for w in work if w[0].image_id not in done]
+        pairs = [p for p in pairs if not (p.before.image_id in done and p.after.image_id in done)]
     if limit is not None:
-        work = work[:limit]
-    if not work:
+        pairs = pairs[:limit]
+    if not pairs:
         progress("Image pass: nothing to do.")
         return 0
 
     client = VLMClient(settings)
     annotator = f"vlm:{client.model}"
-    progress(f"Image pass: labelling {len(work)} images with {client.model} at {settings.vlm_base_url}")
-    done_count = 0
+    progress(f"Image pass: labelling {len(pairs)} pairs ({2 * len(pairs)} images) with {client.model} at {settings.vlm_base_url}")
+    count = 0
     with ThreadPoolExecutor(max_workers=max(1, settings.vlm_concurrency)) as pool:
-        futures = {pool.submit(label_image, client, img, pair): img for img, pair in work}
+        futures = {pool.submit(label_pair, client, p): p for p in pairs}
         for fut in as_completed(futures):
-            img = futures[fut]
+            pair = futures[fut]
             try:
-                label, raw = fut.result()
-            except VLMError as e:
-                progress(f"  ! {img.image_id}: {e}")
+                results = fut.result()
+            except (VLMError, OSError) as e:
+                progress(f"  ! {pair.pair_id}: {e}")
                 continue
-            store.save_image_label(img.image_id, label, annotator, raw)
-            done_count += 1
-            progress(f"  [{done_count}/{len(work)}] {img.image_id}: water={label['flood_visible']} "
-                     f"residue={label['flood_aftermath_visible']} | {label['notes'][:90]}")
-    return done_count
+            for img, label, raw in results:
+                store.save_image_label(img.image_id, label, annotator, raw)
+                count += 1
+                progress(f"  [{count}/{2 * len(pairs)}] {img.image_id}: water={label['flood_visible']} "
+                         f"residue={label['flood_aftermath_visible']} | {label['notes'][:90]}")
+    return count
 
 
 def export_labelled_metadata(settings: Settings, store: Store) -> int:

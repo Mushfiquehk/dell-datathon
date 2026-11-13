@@ -150,3 +150,37 @@ def test_build_alert_paths(tmp_path):
     composed = build_alert(settings, store, lat, lon, client=FakeClient())
     assert composed["composed_by"] == "model:fake"
     assert "A St & B St" in composed["text"]    # appended because the model dropped it
+
+
+# --- comparison logic (model sees one image at a time; code compares) -----------
+def _seen(surface=None, water=False, mud=False):
+    from flood_alert.perception import Seen
+    return Seen(description="d", standing_water=water, mud_or_debris=mud, ring_surface=surface)
+
+
+def test_to_observation_rules():
+    from flood_alert.intersection_pass import to_observation
+
+    o = to_observation(_seen("paved_road"), _seen("standing_water"))
+    assert o["roadway_visible"] and o["new_water_on_roadway"]
+    o = to_observation(_seen("paved_road"), _seen("trees", water=True))
+    assert not o["roadway_visible"] and not o["new_water_on_roadway"]          # -> Undetermined
+    o = to_observation(_seen("trees"), _seen("paved_road"))
+    assert not o["roadway_visible"]
+    o = to_observation(_seen("paved_road", water=True), _seen("paved_road", water=True))
+    assert o["roadway_visible"] and not o["new_water_or_residue_close_by"]     # water was already there
+    o = to_observation(_seen("paved_road"), _seen("paved_road", water=True))
+    assert o["new_water_or_residue_close_by"]
+    o = to_observation(_seen("paved_road"), _seen("mud"))
+    assert o["roadway_visible"] and not o["new_water_on_roadway"] and o["new_water_or_residue_close_by"]
+
+
+def test_labels_for_pair():
+    from flood_alert.image_pass import labels_for_pair
+
+    b, a = labels_for_pair(_seen(water=False), _seen(water=True, mud=True))
+    assert (b["flood_visible"], a["flood_visible"], a["flood_aftermath_visible"]) == ("no", "yes", "yes")
+    b, a = labels_for_pair(_seen(water=True), _seen(water=True))
+    assert a["flood_visible"] == "uncertain"
+    b, a = labels_for_pair(_seen(), _seen())
+    assert a["flood_visible"] == "no" and a["flood_aftermath_visible"] == "no"
