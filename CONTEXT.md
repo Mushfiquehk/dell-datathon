@@ -1,8 +1,14 @@
 # Flood Alert
 
-Turns a broad flash flood warning into a place-by-place picture of which locations inside the warned area are most likely to flood, so residents know where the danger is rather than only that it exists.
+Turns a broad flash flood warning into a place-by-place picture of which locations inside the warned area are most likely to flood, so city and municipal Responders know where to look first rather than only that danger exists.
 
 ## Language
+
+### People
+
+**Responder**:
+A member of a city or municipal team (fire, police, EMS, public works, emergency management) using the map to decide where to send someone to look during a flood. The map tells a Responder where flooding is most likely, never where people are.
+_Avoid_: User, service member, first responder, operator
 
 ### Places
 
@@ -13,6 +19,18 @@ _Avoid_: Junction, crossing, road, road segment, location
 **Image Pair**:
 Two aerial images of the same ground footprint: one taken before Hurricane Harvey and one taken in the days after it.
 _Avoid_: Tile, before/after, sample
+
+**Grid Square**:
+One one-kilometre square of the US National Grid. The same Grid Square always means the same ground and carries a Square Label, so Responders can name it to each other, including over the radio and across agencies.
+_Avoid_: Area, cell, tile, sector, zone, box
+
+**Square Label**:
+The US National Grid reference of one Grid Square at one-kilometre precision, for example "15R TU 52 07". It never changes.
+_Avoid_: ID, code, row/column
+
+**Flagged**:
+A Grid Square is Flagged High if at least one Intersection inside it is rated High, or Flagged Moderate if none is High but at least one is Moderate. Any other Grid Square is not Flagged, which says nothing about whether it is safe. A Grid Square never receives a Susceptibility Rating of its own.
+_Avoid_: Square rating, risk level, hot spot, safe square
 
 **Covered Area**:
 The ground inside the footprint of at least one Image Pair. Only Intersections in the Covered Area can be rated.
@@ -91,3 +109,13 @@ _Avoid_: User location, home, subscriber
 **Nearby**:
 Within a fixed distance of the Alert Location. Only Nearby Intersections are named in an Alert.
 _Avoid_: Local, in the area, close
+
+### Checking
+
+**Selection**:
+The Grid Squares a Responder has highlighted on the map. Only Intersections inside the Selection are shown as pins.
+_Avoid_: Area, search area, region, highlight
+
+**Check List**:
+The High and Moderate Intersections inside the Selection, High first, for a Responder to work through. Low, Undetermined and Unrated Intersections are counted but never listed.
+_Avoid_: Alert, results, report, queue
