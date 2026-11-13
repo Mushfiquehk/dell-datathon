@@ -8,6 +8,7 @@ import base64
 import io
 import json
 import re
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -18,6 +19,7 @@ from typing import Any
 from .config import Settings
 
 _THINK_RE = re.compile(r"<think>.*?</think>", re.DOTALL)
+_USAGE_LOCK = threading.Lock()
 
 
 class VLMError(RuntimeError):
@@ -149,7 +151,11 @@ class VLMClient:
         last: Exception | None = None
         for attempt in range(retries + 1):
             try:
+                t0 = time.time()
                 raw = self._request("/chat/completions", payload)
+                self._log_usage(raw, time.time() - t0, sum(
+                    1 for m in messages if isinstance(m.get("content"), list)
+                    for c in m["content"] if c.get("type") == "image_url"))
                 msg = raw["choices"][0]["message"]
                 return ChatResult(text=msg.get("content") or "", model=raw.get("model", self.model), raw=raw)
             except (VLMError, KeyError, IndexError) as e:
@@ -159,6 +165,21 @@ class VLMClient:
                 if attempt < retries:
                     time.sleep(2 * (attempt + 1))
         raise VLMError(str(last))
+
+    def _log_usage(self, raw: dict, seconds: float, images: int) -> None:
+        """One line per model call in data/usage.jsonl: the server's own token counts and wall time,
+        so the Results can report real local token use instead of an estimate."""
+        usage = raw.get("usage") or {}
+        line = json.dumps({"ts": time.time(), "model": raw.get("model", self._model), "base_url": self.base_url,
+                           "prompt_tokens": usage.get("prompt_tokens"), "completion_tokens": usage.get("completion_tokens"),
+                           "seconds": round(seconds, 3), "images": images})
+        try:
+            path = self.s.data_dir / "usage.jsonl"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with _USAGE_LOCK, open(path, "a", encoding="utf-8") as f:
+                f.write(line + "\n")
+        except OSError:
+            pass
 
     def ask_json(self, prompt: str, images: list[Any] = (), json_schema: dict | None = None,
                  system: str | None = None, retries: int = 2) -> tuple[dict, ChatResult]:
